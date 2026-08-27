@@ -77,17 +77,20 @@ jobs:
 
       # ── 4. STEP 1: Download media onto the GitHub runner ───────────────────
       - name: ⚡ STEP 1 — Download media to GitHub runner
+        env:
+          MEDIA_URL: ${{ github.event.inputs.media_url }}
+          USER_AGENT: ${{ github.event.inputs.user_agent }}
         run: |
           mkdir -p ./downloads
 
-          UA_ARGS=""
-          if [ -n "${{ github.event.inputs.user_agent }}" ]; then
-            UA_ARGS="--user-agent ${{ github.event.inputs.user_agent }}"
-          fi
+          echo "=========================================="
+          echo "Downloading: $MEDIA_URL"
+          echo "=========================================="
 
-          echo "=========================================="
-          echo "Downloading: ${{ github.event.inputs.media_url }}"
-          echo "=========================================="
+          UA_ARGS=()
+          if [ -n "$USER_AGENT" ]; then
+            UA_ARGS=(--user-agent "$USER_AGENT")
+          fi
 
           # Try aria2c multi-thread first, fall back to native yt-dlp
           yt-dlp \
@@ -99,8 +102,8 @@ jobs:
             --fragment-retries 10 \
             --no-check-certificates \
             -o "./downloads/%(title)s.%(ext)s" \
-            $UA_ARGS \
-            "${{ github.event.inputs.media_url }}" \
+            "${UA_ARGS[@]}" \
+            "$MEDIA_URL" \
           || \
           yt-dlp \
             --concurrent-fragments 16 \
@@ -109,8 +112,8 @@ jobs:
             --fragment-retries 10 \
             --no-check-certificates \
             -o "./downloads/%(title)s.%(ext)s" \
-            $UA_ARGS \
-            "${{ github.event.inputs.media_url }}"
+            "${UA_ARGS[@]}" \
+            "$MEDIA_URL"
 
           echo ""
           echo "--- Downloaded files ---"
@@ -118,36 +121,25 @@ jobs:
 
       # ── 5. STEP 2: Upload the already-downloaded file to archive.org ───────
       - name: 📤 STEP 2 — Upload to archive.org
+        env:
+          IA_IDENTIFIER:  ${{ github.event.inputs.identifier }}
+          IA_TITLE:       ${{ github.event.inputs.title }}
+          IA_DESCRIPTION: ${{ github.event.inputs.description }}
+          IA_SUBJECT:     ${{ github.event.inputs.subject }}
+          IA_MEDIATYPE:   ${{ github.event.inputs.mediatype }}
+          IA_COLLECTION:  ${{ github.event.inputs.collection }}
+          IA_NO_DERIVE:   ${{ github.event.inputs.no_derive }}
         run: |
-          # Build optional flags — no eval, just plain args
-          EXTRA=""
+          # All inputs arrive as proper env vars — no word-splitting risk
+          ARGS=(--outdir ./downloads --mediatype "$IA_MEDIATYPE" --collection "$IA_COLLECTION")
 
-          if [ -n "${{ github.event.inputs.identifier }}" ]; then
-            EXTRA="$EXTRA --identifier ${{ github.event.inputs.identifier }}"
-          fi
+          [ -n "$IA_IDENTIFIER"  ] && ARGS+=(--identifier  "$IA_IDENTIFIER")
+          [ -n "$IA_TITLE"       ] && ARGS+=(--title       "$IA_TITLE")
+          [ -n "$IA_DESCRIPTION" ] && ARGS+=(--description "$IA_DESCRIPTION")
+          [ -n "$IA_SUBJECT"     ] && ARGS+=(--subject     "$IA_SUBJECT")
+          [ "$IA_NO_DERIVE" = "true" ] && ARGS+=(--no-derive)
 
-          if [ -n "${{ github.event.inputs.title }}" ]; then
-            EXTRA="$EXTRA --title ${{ github.event.inputs.title }}"
-          fi
-
-          if [ -n "${{ github.event.inputs.description }}" ]; then
-            EXTRA="$EXTRA --description ${{ github.event.inputs.description }}"
-          fi
-
-          if [ -n "${{ github.event.inputs.subject }}" ]; then
-            EXTRA="$EXTRA --subject ${{ github.event.inputs.subject }}"
-          fi
-
-          if [ "${{ github.event.inputs.no_derive }}" = "true" ]; then
-            EXTRA="$EXTRA --no-derive"
-          fi
-
-          # upload_to_archive.py auto-finds the file in ./downloads/
-          python upload_to_archive.py \
-            --outdir ./downloads \
-            --mediatype ${{ github.event.inputs.mediatype }} \
-            --collection ${{ github.event.inputs.collection }} \
-            $EXTRA
+          python upload_to_archive.py "${ARGS[@]}"
 
       # ── 6. Save artifact (1-day backup copy) ──────────────────────────────
       - name: 💾 Save artifact (1-day backup)
