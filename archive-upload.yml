@@ -1,0 +1,157 @@
+name: Download & Upload to Internet Archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      media_url:
+        description: "Media URL (M3U8 / HLS / MP4 / MKV ...)"
+        required: true
+        type: string
+      identifier:
+        description: "archive.org item identifier (leave blank = auto)"
+        required: false
+        type: string
+        default: ""
+      title:
+        description: "Item title on archive.org (leave blank = filename)"
+        required: false
+        type: string
+        default: ""
+      description:
+        description: "Item description"
+        required: false
+        type: string
+        default: "Uploaded via GitHub Actions"
+      subject:
+        description: "Subject / tags (comma-separated)"
+        required: false
+        type: string
+        default: "video"
+      mediatype:
+        description: "archive.org mediatype"
+        required: false
+        type: choice
+        options:
+          - movies
+          - audio
+          - texts
+          - software
+          - image
+          - data
+        default: movies
+      collection:
+        description: "archive.org collection"
+        required: false
+        type: string
+        default: "opensource_movies"
+      no_derive:
+        description: "Skip derivative processing (faster upload)"
+        required: false
+        type: boolean
+        default: false
+      user_agent:
+        description: "Custom User-Agent for download (optional)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  download-then-upload:
+    name: "⬇ Download on GitHub → ☁ Upload to archive.org"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6-hour max for large files
+
+    steps:
+      # ── 1. Checkout repo to get download_and_upload.py ────────────────────
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install system tools ────────────────────────────────────────────
+      - name: 🔧 Install aria2c & ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y aria2 ffmpeg
+
+      # ── 3. Set up Python ───────────────────────────────────────────────────
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 4. Install Python packages ─────────────────────────────────────────
+      - name: 📦 Install yt-dlp & requests
+        run: |
+          pip install --upgrade pip
+          pip install yt-dlp requests
+
+      # ── 5. STEP 1: Download media onto GitHub runner ───────────────────────
+      - name: ⚡ STEP 1 — Download media to GitHub runner
+        run: |
+          mkdir -p ./downloads
+
+          # Build yt-dlp command with aria2c multi-thread engine
+          UA_ARG=""
+          if [ -n "${{ github.event.inputs.user_agent }}" ]; then
+            UA_ARG="--user-agent '${{ github.event.inputs.user_agent }}'"
+          fi
+
+          echo "Downloading: ${{ github.event.inputs.media_url }}"
+
+          yt-dlp \
+            --downloader aria2c \
+            --downloader-args "aria2c:-x 16 -s 16 -k 1M --max-connection-per-server=16 --min-split-size=1M --optimize-concurrent-downloads=true --file-allocation=none" \
+            --concurrent-fragments 16 \
+            --hls-use-mpegts \
+            --retries 10 \
+            --fragment-retries 10 \
+            --no-check-certificates \
+            -o "./downloads/%(title)s.%(ext)s" \
+            $UA_ARG \
+            "${{ github.event.inputs.media_url }}" || \
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            --fragment-retries 10 \
+            -o "./downloads/%(title)s.%(ext)s" \
+            "${{ github.event.inputs.media_url }}"
+
+          echo "--- Download complete. Files in ./downloads: ---"
+          ls -lh ./downloads/
+
+      # ── 6. STEP 2: Upload downloaded file to archive.org ──────────────────
+      - name: 📤 STEP 2 — Upload to archive.org
+        run: |
+          # Build optional args
+          ARGS=""
+          if [ -n "${{ github.event.inputs.identifier }}" ]; then
+            ARGS="$ARGS --identifier '${{ github.event.inputs.identifier }}'"
+          fi
+          if [ -n "${{ github.event.inputs.title }}" ]; then
+            ARGS="$ARGS --title '${{ github.event.inputs.title }}'"
+          fi
+          if [ -n "${{ github.event.inputs.description }}" ]; then
+            ARGS="$ARGS --description '${{ github.event.inputs.description }}'"
+          fi
+          if [ -n "${{ github.event.inputs.subject }}" ]; then
+            ARGS="$ARGS --subject '${{ github.event.inputs.subject }}'"
+          fi
+          if [ "${{ github.event.inputs.no_derive }}" = "true" ]; then
+            ARGS="$ARGS --no-derive"
+          fi
+
+          eval python download_and_upload.py \
+            --url "${{ github.event.inputs.media_url }}" \
+            --mediatype "${{ github.event.inputs.mediatype }}" \
+            --collection "${{ github.event.inputs.collection }}" \
+            --outdir "./downloads" \
+            $ARGS
+
+      # ── 7. Save artifact (1-day backup, archive.org is the real host) ──────
+      - name: 💾 Save downloaded file as Actions artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-media
+          path: ./downloads/
+          retention-days: 1
+          if-no-files-found: warn
